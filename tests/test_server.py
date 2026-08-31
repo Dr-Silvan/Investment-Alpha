@@ -60,7 +60,7 @@ class DatabaseTests(unittest.TestCase):
             {"date": "2026-08-27", "price": 161.38},
             {"date": "2026-08-28", "price": 157.74},
         ]
-        with patch.object(server, "market_bars", return_value=bars), patch.object(server, "selected_provider", return_value="yfinance"):
+        with patch.object(server, "market_bars", return_value=bars), patch.object(server, "selected_provider", return_value="alpaca"):
             quote = server.latest_market_close("APH")
         self.assertEqual(quote["price"], 157.74)
         self.assertEqual(quote["asOf"], "2026-08-28")
@@ -72,6 +72,30 @@ class DatabaseTests(unittest.TestCase):
                 status = server.provider_status()
                 self.assertEqual(status["provider"], "yfinance")
                 self.assertTrue(status["configured"])
+
+    def test_monday_before_close_uses_friday_completed_session(self):
+        monday = server.datetime(2026, 8, 31, 15, 0, tzinfo=server.timezone.utc)  # 11:00 ET
+        self.assertEqual(server.expected_completed_session(monday).isoformat(), "2026-08-28")
+
+    def test_yfinance_recovers_missing_daily_bar_from_previous_close(self):
+        monday = server.datetime(2026, 8, 31, 15, 0, tzinfo=server.timezone.utc)
+        bars = [{"date": "2026-08-27", "price": 161.38}]
+        with (
+            patch.object(server, "yfinance_bars", return_value=bars),
+            patch.object(server, "yfinance_quote_snapshot", return_value={"last": 158.02, "previous": 158.44}),
+        ):
+            quote = server.yfinance_completed_close("APH", monday)
+        self.assertEqual(quote["asOf"], "2026-08-28")
+        self.assertEqual(quote["price"], 158.44)
+        self.assertIn("fallback", quote["source"])
+
+    def test_after_close_uses_current_session_close(self):
+        monday_after_close = server.datetime(2026, 8, 31, 20, 30, tzinfo=server.timezone.utc)  # 16:30 ET
+        bars = [{"date": "2026-08-31", "price": 158.02}]
+        with patch.object(server, "yfinance_bars", return_value=bars):
+            quote = server.yfinance_completed_close("APH", monday_after_close)
+        self.assertEqual(quote["asOf"], "2026-08-31")
+        self.assertEqual(quote["price"], 158.02)
 
     def test_market_provider_credentials_are_dpapi_encrypted(self):
         with tempfile.TemporaryDirectory() as tmp:

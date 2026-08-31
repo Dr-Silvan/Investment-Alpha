@@ -43,7 +43,7 @@ try {
     Sign-Artifact (Join-Path $projectRoot 'dist\투자\투자.exe')
     & $iscc 'packaging\tuja.iss'
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup build failed.' }
-    Sign-Artifact (Join-Path $projectRoot 'release\Tuja-Setup-0.9.1-beta.1.exe')
+    Sign-Artifact (Join-Path $projectRoot 'release\Tuja-Setup-0.9.2-beta.exe')
 } finally {
     Pop-Location
 }

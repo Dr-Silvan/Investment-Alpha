@@ -1,5 +1,5 @@
 #define MyAppName "투자"
-#define MyAppVersion "0.9.1-beta.1"
+#define MyAppVersion "0.9.2-beta"
 #define MyAppPublisher "Dr-Silvan"
 #define MyAppExeName "투자.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={localappdata}\Programs\투자
 DefaultGroupName=투자
 PrivilegesRequired=lowest
 OutputDir=..\release
-OutputBaseFilename=Tuja-Setup-0.9.1-beta.1
+OutputBaseFilename=Tuja-Setup-0.9.2-beta
 SetupIconFile=..\assets\tuja-icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/max
@@ -22,7 +22,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
-VersionInfoVersion=0.9.1.1
+VersionInfoVersion=0.9.2.0
 VersionInfoProductName=투자
 VersionInfoDescription=Local-first trading workstation
 LicenseFile=..\LICENSE

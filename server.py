@@ -15,7 +15,7 @@ import threading
 import time
 import webbrowser
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -648,12 +648,54 @@ def provider_source(provider: str | None = None) -> str:
     return "Alpaca historical SIP · raw daily close" if (provider or selected_provider()) == "alpaca" else "Yahoo Finance via yfinance · daily close"
 
 
+def expected_completed_session(now: datetime | None = None) -> date:
+    ny_now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+    candidate = ny_now.date()
+    if ny_now.weekday() >= 5 or ny_now.time() < datetime_time(16, 15):
+        candidate -= timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def yfinance_quote_snapshot(ticker: str) -> dict:
+    try:
+        info = yf.Ticker(ticker.strip().upper()).fast_info
+        return {"last": float(info.last_price), "previous": float(info.previous_close)}
+    except Exception as exc:
+        raise ValueError("Yahoo Finance 종가 메타데이터를 불러오지 못했습니다.") from exc
+
+
+def yfinance_completed_close(ticker: str, now: datetime | None = None) -> dict:
+    expected = expected_completed_session(now)
+    start = datetime.combine(expected - timedelta(days=14), datetime_time.min, tzinfo=timezone.utc)
+    end = datetime.combine(expected + timedelta(days=1), datetime_time.min, tzinfo=timezone.utc)
+    rows = yfinance_bars(ticker, start, end)
+    exact = next((row for row in reversed(rows) if row["date"] == expected.isoformat()), None)
+    if exact:
+        price = exact["price"]
+        method = "daily bar"
+    else:
+        snapshot = yfinance_quote_snapshot(ticker)
+        ny_now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+        price = snapshot["last"] if expected == ny_now.date() else snapshot["previous"]
+        method = "quote metadata fallback"
+    return {
+        "ticker": ticker.upper(), "price": round(price, 4), "asOf": expected.isoformat(),
+        "source": f"Yahoo Finance via yfinance · completed close · {method}",
+    }
+
+
 def market_return(ticker: str, start_date: str, end_date: str | None = None) -> dict:
     start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
     requested_end = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1) if end_date else completed_data_cutoff()
     end = min(requested_end, completed_data_cutoff())
     try:
         rows = market_bars(ticker, start, end)
+        if selected_provider() == "yfinance" and end_date is None:
+            completed = yfinance_completed_close(ticker)
+            if not rows or completed["asOf"] > rows[-1]["date"]:
+                rows.append({"date": completed["asOf"], "price": completed["price"]})
         if not rows:
             raise ValueError("가격 데이터가 없습니다.")
         first, last = rows[0], rows[-1]
@@ -670,6 +712,8 @@ def market_return(ticker: str, start_date: str, end_date: str | None = None) -> 
 def latest_market_close(ticker: str) -> dict:
     """Return the latest completed daily close from the selected provider."""
     try:
+        if selected_provider() == "yfinance":
+            return yfinance_completed_close(ticker)
         end = completed_data_cutoff()
         rows = market_bars(ticker, end - timedelta(days=14), end)
         if not rows:
