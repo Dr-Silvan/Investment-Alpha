@@ -48,7 +48,7 @@ jobs:
           $testLocal = Join-Path $env:RUNNER_TEMP 'tuja-localappdata'
           New-Item -ItemType Directory -Path $testLocal | Out-Null
           $arguments = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=""',"/DIR=$installDir")
-          $setup = Start-Process '.\release\Tuja-Setup-0.9.1-beta.exe' -ArgumentList $arguments -Wait -PassThru
+          $setup = Start-Process '.\release\Tuja-Setup-0.9.1-beta.1.exe' -ArgumentList $arguments -Wait -PassThru
           if ($setup.ExitCode -ne 0) { throw "Installer failed: $($setup.ExitCode)" }
           $app = Join-Path $installDir '투자.exe'
           if (-not (Test-Path -LiteralPath $app)) { throw 'Installed executable is missing.' }
@@ -78,5 +78,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Tuja-Setup-0.9.1-beta-windows-ci
-          path: release/Tuja-Setup-0.9.1-beta.exe
+          name: Tuja-Setup-0.9.1-beta.1-windows-ci
+          path: release/Tuja-Setup-0.9.1-beta.1.exe

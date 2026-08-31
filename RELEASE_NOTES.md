@@ -1,4 +1,4 @@
-# 투자 0.9.1-beta
+# 투자 0.9.1-beta.1
 
 ## 0.9.1 변경 사항
 
@@ -30,7 +30,7 @@ Investment Beta가 **투자**로 이름과 아이콘을 새롭게 정리한 첫 
 
 ## Windows 설치
 
-`Tuja-Setup-0.9.1-beta.exe`를 내려받아 실행합니다. Windows SmartScreen은 코드 서명이 없는 개인 베타 앱에 경고를 표시할 수 있습니다.
+`Tuja-Setup-0.9.1-beta.1.exe`를 내려받아 실행합니다. Windows SmartScreen은 코드 서명이 없는 개인 베타 앱에 경고를 표시할 수 있습니다.
 
 - Python 런타임 포함
 - 시작 메뉴와 선택형 바탕화면 바로가기
