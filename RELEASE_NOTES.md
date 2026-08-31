@@ -13,9 +13,12 @@ Investment Beta가 **투자**로 이름과 아이콘을 새롭게 정리한 첫 
 - 미국 주요 경제지표와 향후 7일 이벤트 레이더
 - Exit Quality와 Chicken-out 가능성 복기
 - 앱 시작 시 최근 완료된 미국장 종가 자동 갱신
+- Alpaca historical SIP provider와 첫 실행 API 연결 튜토리얼
+- Windows DPAPI 기반 API Key·Secret 암호화 저장
 - 루프백·Host·Origin 검증과 브라우저 보안 헤더 적용
 - 외부 경제 일정 문자열과 링크 출력 정제
 - 개인 경로가 없는 재현 가능한 Windows 빌드 스크립트
+- 깨끗한 Windows 가상머신의 빌드·설치·첫 실행·제거 후 데이터 보존 검증
 
 ## Windows 설치
 
