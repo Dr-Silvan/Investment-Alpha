@@ -11,6 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
+import secure_store
 
 
 class DatabaseTests(unittest.TestCase):
@@ -54,24 +55,27 @@ class DatabaseTests(unittest.TestCase):
                     httpd.server_close()
                     thread.join(timeout=3)
 
-    def test_latest_close_uses_completed_market_meta_when_daily_candle_is_null(self):
-        payload = {"chart": {"result": [{
-            "meta": {
-                "regularMarketPrice": 157.74,
-                "regularMarketTime": 1787947203,
-                "exchangeTimezoneName": "America/New_York",
-                "currentTradingPeriod": {"regular": {"start": 1788183000, "end": 1788206400}},
-            },
-            "timestamp": [1787851800, 1787938200],
-            "indicators": {"quote": [{"close": [161.38, None]}]},
-        }]}}
-        response = io.BytesIO(json.dumps(payload).encode("utf-8"))
-        response.__enter__ = lambda value: value
-        response.__exit__ = lambda *args: None
-        with patch.object(server, "urlopen", return_value=response):
+    def test_latest_close_uses_latest_alpaca_completed_bar(self):
+        bars = [
+            {"date": "2026-08-27", "price": 161.38},
+            {"date": "2026-08-28", "price": 157.74},
+        ]
+        with patch.object(server, "alpaca_bars", return_value=bars):
             quote = server.latest_market_close("APH")
         self.assertEqual(quote["price"], 157.74)
         self.assertEqual(quote["asOf"], "2026-08-28")
+
+    def test_market_provider_credentials_are_dpapi_encrypted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "provider.bin"
+            secure_store.save_credentials(path, "PKTEST123", "secret-value-123456")
+            raw = path.read_bytes()
+            self.assertNotIn(b"PKTEST123", raw)
+            self.assertNotIn(b"secret-value", raw)
+            self.assertEqual(
+                secure_store.load_credentials(path),
+                {"apiKey": "PKTEST123", "apiSecret": "secret-value-123456"},
+            )
 
     def test_initial_database_has_expected_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:

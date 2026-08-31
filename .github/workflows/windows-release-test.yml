@@ -1,0 +1,81 @@
+name: Windows release test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  clean-windows-install:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check JavaScript syntax
+        shell: pwsh
+        run: |
+          Get-ChildItem web -Filter '*.js' | ForEach-Object {
+            node --check $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "JavaScript syntax failed: $($_.Name)" }
+          }
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build unsigned CI installer
+        shell: pwsh
+        env:
+          TUJA_PYTHON: ${{ env.pythonLocation }}\python.exe
+          ISCC_PATH: C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+        run: .\packaging\build-release.ps1
+
+      - name: Install and verify first run
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'tuja-install'
+          $testLocal = Join-Path $env:RUNNER_TEMP 'tuja-localappdata'
+          New-Item -ItemType Directory -Path $testLocal | Out-Null
+          $arguments = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=""',"/DIR=$installDir")
+          $setup = Start-Process '.\release\Tuja-Setup-0.9.0-beta.exe' -ArgumentList $arguments -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Installer failed: $($setup.ExitCode)" }
+          $app = Join-Path $installDir '투자.exe'
+          if (-not (Test-Path -LiteralPath $app)) { throw 'Installed executable is missing.' }
+          $env:LOCALAPPDATA = $testLocal
+          $process = Start-Process $app -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 60; $attempt++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $provider = Invoke-RestMethod 'http://127.0.0.1:8787/api/provider-settings' -TimeoutSec 2
+                if ($provider.provider -eq 'Alpaca' -and -not $provider.configured) { $ready = $true; break }
+              } catch {}
+            }
+            if (-not $ready) { throw 'Installed app did not become ready.' }
+            $database = Join-Path $testLocal '투자\data\workstation.db'
+            if (-not (Test-Path -LiteralPath $database)) { throw 'First-run database was not created.' }
+          } finally {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*$testLocal*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          }
+          $uninstaller = Join-Path $installDir 'unins000.exe'
+          $uninstall = Start-Process $uninstaller -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
+          if (-not (Test-Path -LiteralPath (Join-Path $testLocal '투자\data\workstation.db'))) { throw 'Uninstall removed user data.' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tuja-Setup-0.9.0-beta-windows-ci
+          path: release/Tuja-Setup-0.9.0-beta.exe

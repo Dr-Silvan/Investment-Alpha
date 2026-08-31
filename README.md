@@ -68,8 +68,8 @@
 
 ### 시장 가격
 
-- Yahoo Finance 일봉을 사용하며 장중 가격이 아닌 완료된 미국장 종가만 저장한다.
-- Yahoo 일봉 `close`가 일시적으로 비어 있어도 거래 세션 종료가 확인되고 `regularMarketPrice`가 더 최신이면 이를 완료 종가로 사용한다.
+- 사용자가 연결한 Alpaca historical SIP 일봉을 사용하며 장중 가격이 아닌 완료된 미국장 종가만 저장한다.
+- 무료 Basic 계정의 SIP 조회 제한을 고려해 현재 시점보다 최소 15분 이전의 완료 일봉만 요청한다.
 - 앱 시작 시 활성 포지션 가격을 자동 갱신한다. 네트워크 실패 시 마지막 정상 저장값을 유지한다.
 - 종목별 비교는 해당 포지션 진입일부터 섹터 대표주와 SPY를 비교한다.
 - 전체 성과는 프로그램의 공통 기준일부터 포트폴리오와 SPY·QQQ를 비교한다.
@@ -111,7 +111,8 @@
 - 단일 자산 기록에서도 날짜/자산 축이 유지되도록 그래프 보정
 - Import Position이 Today 활성 포지션에 집계되지 않던 문제 수정
 - Day 모드의 빈 손익률 `null` 렌더링 오류와 탭 전환 수정
-- Yahoo의 최신 일봉 `close=null` 때문에 직전 거래일이 선택되던 문제 수정
+- 시장 데이터 provider를 비공식 Yahoo 엔드포인트에서 Alpaca historical SIP로 교체
+- 첫 실행 API 연결 튜토리얼과 Windows DPAPI 암호화 키 저장 추가
 - 앱 시작 시 완료 종가 자동 갱신 추가
 
 ## 데이터 저장과 개인정보
@@ -137,7 +138,20 @@ python -m pip install -r requirements.txt
 
 Python 3와 Microsoft Edge가 필요하다. 설치 패키지는 Python 런타임을 포함하지만 현재 UI 호스트로 Microsoft Edge를 사용한다.
 
+### 첫 실행 시장 데이터 연결
+
+첫 실행 시 시장 데이터 연결 안내가 자동으로 열린다.
+
+1. 안내 창의 링크에서 Alpaca 계정을 만든다.
+2. Paper Trading 화면의 API Keys에서 Key ID와 Secret Key를 생성한다.
+3. 두 값을 `투자`의 연결 창에 붙여넣고 `연결 확인 후 저장`을 누른다.
+4. 앱은 SPY historical SIP 일봉으로 인증을 확인한 뒤 키를 Windows DPAPI로 암호화 저장한다.
+
+키는 `workstation.db`나 Git 저장소에 저장되지 않는다. 우측 상단 톱니바퀴에서 연결을 교체하거나 삭제할 수 있다. 무료 Basic 계정에서는 현재 시점보다 15분 이상 지난 SIP historical data를 사용한다.
+
 배포 설치 파일을 직접 빌드하려면 Python 3.10 이상, `requirements-dev.txt`, Inno Setup이 필요하다. Python이나 Inno Setup이 기본 경로에 없다면 각각 `TUJA_PYTHON`, `ISCC_PATH` 환경 변수로 실행 파일을 지정할 수 있다.
+
+공개 서명 빌드는 Windows 인증서 저장소의 코드 서명 인증서 SHA-1 지문을 `TUJA_SIGN_CERT_SHA1`에 설정하고 `TUJA_REQUIRE_SIGNING=1`로 실행한다. 빌드 스크립트는 앱과 설치 파일을 SHA-256으로 서명하고 DigiCert 타임스탬프를 적용한 뒤 서명 상태가 `Valid`인지 검사한다.
 
 ## Apple 디바이스 이식 방향
 

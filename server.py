@@ -24,6 +24,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
+from secure_store import delete_credentials, load_credentials, save_credentials
+
 
 ROOT = Path(__file__).resolve().parent
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", ROOT))
@@ -33,6 +35,7 @@ if getattr(sys, "frozen", False):
 else:
     DATA = ROOT / "data"
 DB_PATH = DATA / "workstation.db"
+PROVIDER_CREDENTIALS = DATA / "market-provider.bin"
 LAST_HEARTBEAT = 0.0
 SECTOR_CACHE: dict[str, dict] = {}
 SECTOR_LEADERS = {
@@ -50,6 +53,14 @@ SECTOR_LEADERS = {
     "Real Estate": ("XLRE", "PLD"),
 }
 SECTOR_ETFS = {etf: sector for sector, (etf, _) in SECTOR_LEADERS.items()}
+SECTOR_SYMBOLS = {
+    "APH": "Industrials", "IBKR": "Financial Services", "XES": "Energy",
+    "AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology",
+    "AMZN": "Consumer Cyclical", "META": "Communication Services",
+    "GOOGL": "Communication Services", "GOOG": "Communication Services",
+    "JPM": "Financial Services", "BAC": "Financial Services",
+    "XOM": "Energy", "CVX": "Energy", "LLY": "Healthcare", "UNH": "Healthcare",
+}
 SWING_STRATEGIES = {
     "차트 구조": ["핵심: LL 이후 상승 Swing AVWAP 교점","평행 패턴 저점","평행 패턴 돌파 후 Test·재상승","대칭삼각","상승삼각","하강삼각","하모닉 패턴","상승 패턴","지지·저항 전환 후 Retest","박스권 저항 돌파","HH·HL 상승 구조"],
     "모멘텀": ["RSI 지지","스토캐스틱 골든크로스","스토캐스틱 상승"],
@@ -538,104 +549,94 @@ def sync_account_value(db: sqlite3.Connection) -> None:
         )
 
 
+def provider_status() -> dict:
+    credentials = load_credentials(PROVIDER_CREDENTIALS)
+    return {
+        "provider": "Alpaca", "feed": "SIP historical", "configured": bool(credentials),
+        "credentialStorage": "Windows DPAPI", "minimumDelayMinutes": 15,
+    }
+
+
+def alpaca_bars(ticker: str, start: datetime, end: datetime, credentials: dict | None = None) -> list[dict]:
+    credentials = credentials or load_credentials(PROVIDER_CREDENTIALS)
+    if not credentials:
+        raise ValueError("Alpaca API 키가 설정되지 않았습니다.")
+    symbol = quote(ticker.strip().upper(), safe="")
+    params = (
+        f"timeframe=1Day&start={quote(start.astimezone(timezone.utc).isoformat(), safe='')}"
+        f"&end={quote(end.astimezone(timezone.utc).isoformat(), safe='')}"
+        "&adjustment=raw&feed=sip&limit=10000&sort=asc"
+    )
+    request = Request(
+        f"https://data.alpaca.markets/v2/stocks/{symbol}/bars?{params}",
+        headers={
+            "APCA-API-KEY-ID": credentials["apiKey"],
+            "APCA-API-SECRET-KEY": credentials["apiSecret"],
+            "User-Agent": "Tuja/0.9",
+        },
+    )
+    try:
+        with urlopen(request, timeout=12) as response:
+            payload = json.load(response)
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ValueError("Alpaca 인증에 실패했습니다. API Key와 Secret을 확인하세요.") from exc
+        if exc.code == 429:
+            raise ValueError("Alpaca 요청 한도에 도달했습니다. 잠시 후 다시 시도하세요.") from exc
+        raise ValueError(f"Alpaca 시장 데이터 오류 ({exc.code})") from exc
+    except (URLError, TimeoutError) as exc:
+        raise ValueError("Alpaca 시장 데이터에 연결하지 못했습니다.") from exc
+    bars = payload.get("bars") or []
+    return [
+        {"date": str(row["t"])[:10], "price": float(row["c"])}
+        for row in bars if row.get("t") and row.get("c") is not None
+    ]
+
+
+def completed_data_cutoff() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(minutes=16)
+
+
 def market_return(ticker: str, start_date: str, end_date: str | None = None) -> dict:
     start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
-    period1 = int(start.timestamp())
-    end = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) if end_date else datetime.now(timezone.utc)
-    period2 = int(end.timestamp()) + 172_800
-    symbol = quote(ticker.strip().upper(), safe="")
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        f"?period1={period1}&period2={period2}&interval=1d&events=history&includeAdjustedClose=true"
-    )
-    request = Request(url, headers={"User-Agent": "Investment-Beta/0.1"})
+    requested_end = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1) if end_date else completed_data_cutoff()
+    end = min(requested_end, completed_data_cutoff())
     try:
-        with urlopen(request, timeout=8) as response:
-            payload = json.load(response)
-        result = payload["chart"]["result"][0]
-        timestamps = result.get("timestamp", [])
-        closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-        rows = [(datetime.fromtimestamp(stamp, timezone.utc).date().isoformat(), float(value)) for stamp, value in zip(timestamps, closes) if value is not None]
-        meta = result.get("meta", {})
-        meta_stamp = int(meta.get("regularMarketTime") or 0)
-        meta_price = meta.get("regularMarketPrice")
-        period = meta.get("currentTradingPeriod", {}).get("regular", {})
-        period_start, period_end = int(period.get("start") or 0), int(period.get("end") or 0)
-        last_stamp = max((stamp for stamp, value in zip(timestamps, closes) if value is not None), default=0)
-        if meta_stamp and meta_price is not None and period_start and period_end and (meta_stamp < period_start or meta_stamp >= period_end) and meta_stamp > last_stamp:
-            zone = ZoneInfo(meta.get("exchangeTimezoneName") or "America/New_York")
-            rows.append((datetime.fromtimestamp(meta_stamp, timezone.utc).astimezone(zone).date().isoformat(), float(meta_price)))
+        rows = alpaca_bars(ticker, start, end)
         if not rows:
             raise ValueError("가격 데이터가 없습니다.")
-        first_date, first = rows[0]
-        last_date, last = rows[-1]
+        first, last = rows[0], rows[-1]
         return {
-            "ticker": ticker.upper(), "startPrice": first, "lastPrice": last,
-            "startDate": first_date, "lastDate": last_date,
-            "returnPct": round((last / first - 1) * 100, 2), "source": "Yahoo Finance daily close",
+            "ticker": ticker.upper(), "startPrice": first["price"], "lastPrice": last["price"],
+            "startDate": first["date"], "lastDate": last["date"],
+            "returnPct": round((last["price"] / first["price"] - 1) * 100, 2),
+            "source": "Alpaca historical SIP · raw daily close",
         }
-    except (HTTPError, URLError, TimeoutError, KeyError, IndexError, ValueError) as exc:
-        return {"ticker": ticker.upper(), "error": str(exc), "source": "Yahoo Finance"}
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"ticker": ticker.upper(), "error": str(exc), "source": "Alpaca historical SIP"}
 
 
 def latest_market_close(ticker: str) -> dict:
-    """Return the latest completed daily close without requiring yfinance."""
-    symbol = quote(ticker.strip().upper(), safe="")
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        "?range=10d&interval=1d&events=history&includeAdjustedClose=false"
-    )
-    request = Request(url, headers={"User-Agent": "Investment-Beta/0.1"})
+    """Return the latest completed Alpaca SIP daily close."""
     try:
-        with urlopen(request, timeout=8) as response:
-            result = json.load(response)["chart"]["result"][0]
-        meta = result.get("meta", {})
-        timestamps = result.get("timestamp", [])
-        closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-        completed = [(stamp, value) for stamp, value in zip(timestamps, closes) if value is not None]
-        meta_stamp = int(meta.get("regularMarketTime") or 0)
-        meta_price = meta.get("regularMarketPrice")
-        regular_period = meta.get("currentTradingPeriod", {}).get("regular", {})
-        current_start = int(regular_period.get("start") or 0)
-        current_end = int(regular_period.get("end") or 0)
-        meta_is_completed = bool(
-            meta_stamp and meta_price is not None and current_start and current_end
-            and (meta_stamp < current_start or meta_stamp >= current_end)
-        )
-        # Yahoo occasionally publishes the completed session in regularMarketPrice
-        # before filling that day's daily close candle. Prefer the newer completed
-        # market timestamp instead of silently falling back to the prior session.
-        if meta_is_completed and (not completed or meta_stamp > completed[-1][0]):
-            stamp, value = meta_stamp, meta_price
-        elif completed:
-            stamp, value = completed[-1]
-        else:
+        end = completed_data_cutoff()
+        rows = alpaca_bars(ticker, end - timedelta(days=14), end)
+        if not rows:
             raise ValueError("완료된 종가 데이터가 없습니다.")
-        zone = ZoneInfo(meta.get("exchangeTimezoneName") or "America/New_York")
+        row = rows[-1]
         return {
-            "ticker": ticker.upper(), "price": round(float(value), 4),
-            "asOf": datetime.fromtimestamp(stamp, timezone.utc).astimezone(zone).date().isoformat(),
-            "source": "Yahoo Finance daily close",
+            "ticker": ticker.upper(), "price": round(row["price"], 4), "asOf": row["date"],
+            "source": "Alpaca historical SIP · raw daily close",
         }
-    except (HTTPError, URLError, TimeoutError, KeyError, IndexError, TypeError, ValueError) as exc:
-        return {"ticker": ticker.upper(), "error": str(exc), "source": "Yahoo Finance daily close"}
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"ticker": ticker.upper(), "error": str(exc), "source": "Alpaca historical SIP"}
 
 
 def sector_leader_for(ticker: str) -> dict:
     symbol = ticker.strip().upper()
     if symbol in SECTOR_CACHE:
         return dict(SECTOR_CACHE[symbol])
-    sector = SECTOR_ETFS.get(symbol)
-    if not sector:
-        url = f"https://query1.finance.yahoo.com/v1/finance/search?q={quote(symbol)}&quotesCount=1&newsCount=0"
-        request = Request(url, headers={"User-Agent": "Investment-Beta/0.1"})
-        try:
-            with urlopen(request, timeout=8) as response:
-                quotes = json.load(response).get("quotes", [])
-            match = next((row for row in quotes if row.get("symbol", "").upper() == symbol), quotes[0] if quotes else {})
-            sector = match.get("sector") or match.get("sectorDisp")
-        except (HTTPError, URLError, TimeoutError, KeyError, IndexError, ValueError) as exc:
-            return {"ticker": symbol, "error": f"섹터 조회 실패: {exc}"}
+    sector = SECTOR_ETFS.get(symbol) or SECTOR_SYMBOLS.get(symbol)
     mapping = SECTOR_LEADERS.get(sector)
     if not mapping:
         return {"ticker": symbol, "sector": sector, "error": "지원되는 핵심 섹터로 분류되지 않았습니다."}
@@ -648,22 +649,7 @@ def sector_leader_for(ticker: str) -> dict:
 def market_series(ticker: str, start_date: str, end_date: str) -> list[dict]:
     start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
     end = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1)
-    symbol = quote(ticker.strip().upper(), safe="")
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        f"?period1={int(start.timestamp())}&period2={int(end.timestamp())}"
-        "&interval=1d&events=history&includeAdjustedClose=true"
-    )
-    request = Request(url, headers={"User-Agent": "Investment-Beta/0.1"})
-    with urlopen(request, timeout=8) as response:
-        result = json.load(response)["chart"]["result"][0]
-    timestamps = result.get("timestamp", [])
-    adjusted = result.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
-    rows = []
-    for stamp, value in zip(timestamps, adjusted):
-        if value is not None:
-            rows.append({"date": datetime.fromtimestamp(stamp, timezone.utc).date().isoformat(), "price": float(value)})
-    return rows
+    return alpaca_bars(ticker, start, min(end, completed_data_cutoff()))
 
 
 def classify_exit(review: dict, post: dict) -> str:
@@ -852,6 +838,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/provider-settings":
+            self.send_json(provider_status())
+            return
         if path == "/api/dashboard":
             with connect() as db:
                 self.send_json(dashboard(db))
@@ -976,6 +965,18 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             payload = self.read_json()
             parts = path.strip("/").split("/")
+            if path == "/api/provider-settings":
+                api_key = str(payload.get("apiKey", "")).strip()
+                api_secret = str(payload.get("apiSecret", "")).strip()
+                if len(api_key) < 8 or len(api_secret) < 16:
+                    raise ValueError("올바른 Alpaca API Key와 Secret을 입력하세요.")
+                candidate = {"apiKey": api_key, "apiSecret": api_secret}
+                end = completed_data_cutoff()
+                if not alpaca_bars("SPY", end - timedelta(days=10), end, candidate):
+                    raise ValueError("인증은 되었지만 SPY 일봉 데이터를 받지 못했습니다.")
+                save_credentials(PROVIDER_CREDENTIALS, api_key, api_secret)
+                self.send_json(provider_status())
+                return
             if path == "/api/heartbeat":
                 global LAST_HEARTBEAT
                 LAST_HEARTBEAT = time.monotonic()
@@ -1090,7 +1091,12 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.request_is_allowed(mutating=True):
             self.send_json({"error": "Cross-origin request blocked"}, HTTPStatus.FORBIDDEN)
             return
-        parts = urlparse(self.path).path.strip("/").split("/")
+        path = urlparse(self.path).path
+        if path == "/api/provider-settings":
+            delete_credentials(PROVIDER_CREDENTIALS)
+            self.send_json({"deleted": True, **provider_status()})
+            return
+        parts = path.strip("/").split("/")
         if len(parts) == 3 and parts[0] == "api" and parts[1] in {"cashflows", "snapshots"}:
             table = "cashflows" if parts[1] == "cashflows" else "account_snapshots"
             try:

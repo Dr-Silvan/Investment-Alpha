@@ -32,8 +32,12 @@ await import('/position-management.js').then(module=>module.install({state,viewO
 await import('/strategy-manager.js').then(module=>module.install({state,viewOverrides,api,load,toast}));
 await import('/macro-news.js').then(module=>module.install({viewOverrides,api}));
 await import('/day-mode.js').then(module=>module.install({state,api,load,toast,title,money,switchView}));
+const providerSetup=await import('/provider-setup.js').then(module=>module.install({api,toast}));
+document.querySelector('.avatar').onclick=()=>providerSetup.open(true);
 async function bootstrap(){
   await load();switchView('today');
+  const provider=await providerSetup.status();
+  if(!provider.configured){await providerSetup.open(true);return}
   const initialView=state.view;
   try{
     await api('/api/positions/refresh-prices',{method:'POST',body:'{}'});
