@@ -55,15 +55,23 @@ class DatabaseTests(unittest.TestCase):
                     httpd.server_close()
                     thread.join(timeout=3)
 
-    def test_latest_close_uses_latest_alpaca_completed_bar(self):
+    def test_latest_close_uses_latest_selected_provider_bar(self):
         bars = [
             {"date": "2026-08-27", "price": 161.38},
             {"date": "2026-08-28", "price": 157.74},
         ]
-        with patch.object(server, "alpaca_bars", return_value=bars):
+        with patch.object(server, "market_bars", return_value=bars), patch.object(server, "selected_provider", return_value="yfinance"):
             quote = server.latest_market_close("APH")
         self.assertEqual(quote["price"], 157.74)
         self.assertEqual(quote["asOf"], "2026-08-28")
+
+    def test_yfinance_is_the_default_market_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            preference = Path(tmp) / "provider.json"
+            with patch.object(server, "PROVIDER_PREFERENCES", preference):
+                status = server.provider_status()
+                self.assertEqual(status["provider"], "yfinance")
+                self.assertTrue(status["configured"])
 
     def test_market_provider_credentials_are_dpapi_encrypted(self):
         with tempfile.TemporaryDirectory() as tmp:

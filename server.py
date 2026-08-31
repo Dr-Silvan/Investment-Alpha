@@ -24,6 +24,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
+import yfinance as yf
+
 from secure_store import delete_credentials, load_credentials, save_credentials
 
 
@@ -36,6 +38,7 @@ else:
     DATA = ROOT / "data"
 DB_PATH = DATA / "workstation.db"
 PROVIDER_CREDENTIALS = DATA / "market-provider.bin"
+PROVIDER_PREFERENCES = DATA / "market-provider.json"
 LAST_HEARTBEAT = 0.0
 SECTOR_CACHE: dict[str, dict] = {}
 SECTOR_LEADERS = {
@@ -549,12 +552,51 @@ def sync_account_value(db: sqlite3.Connection) -> None:
         )
 
 
+def selected_provider() -> str:
+    try:
+        value = json.loads(PROVIDER_PREFERENCES.read_text(encoding="utf-8")).get("provider", "yfinance")
+    except (OSError, ValueError, TypeError):
+        value = "yfinance"
+    return value if value in {"yfinance", "alpaca"} else "yfinance"
+
+
+def save_provider_preference(provider: str) -> None:
+    if provider not in {"yfinance", "alpaca"}:
+        raise ValueError("지원하지 않는 시장 데이터 공급자입니다.")
+    PROVIDER_PREFERENCES.parent.mkdir(parents=True, exist_ok=True)
+    PROVIDER_PREFERENCES.write_text(json.dumps({"provider": provider}), encoding="utf-8")
+
+
 def provider_status() -> dict:
+    selected = selected_provider()
     credentials = load_credentials(PROVIDER_CREDENTIALS)
     return {
-        "provider": "Alpaca", "feed": "SIP historical", "configured": bool(credentials),
-        "credentialStorage": "Windows DPAPI", "minimumDelayMinutes": 15,
+        "provider": selected, "displayName": "Yahoo Finance (yfinance)" if selected == "yfinance" else "Alpaca",
+        "feed": "completed daily close" if selected == "yfinance" else "SIP historical",
+        "configured": selected == "yfinance" or bool(credentials),
+        "alpacaConfigured": bool(credentials), "credentialStorage": "Windows DPAPI",
+        "minimumDelayMinutes": 15 if selected == "alpaca" else None,
     }
+
+
+def yfinance_bars(ticker: str, start: datetime, end: datetime) -> list[dict]:
+    symbol = ticker.strip().upper()
+    try:
+        frame = yf.download(
+            symbol, start=start.date().isoformat(), end=end.date().isoformat(), interval="1d",
+            auto_adjust=False, actions=False, progress=False, threads=False, timeout=12,
+        )
+    except Exception as exc:
+        raise ValueError("Yahoo Finance 시장 데이터에 연결하지 못했습니다.") from exc
+    if frame is None or frame.empty:
+        return []
+    close = frame["Close"]
+    if getattr(close, "ndim", 1) > 1:
+        close = close.iloc[:, 0]
+    return [
+        {"date": index.date().isoformat(), "price": float(price)}
+        for index, price in close.dropna().items()
+    ]
 
 
 def alpaca_bars(ticker: str, start: datetime, end: datetime, credentials: dict | None = None) -> list[dict]:
@@ -597,12 +639,21 @@ def completed_data_cutoff() -> datetime:
     return datetime.now(timezone.utc) - timedelta(minutes=16)
 
 
+def market_bars(ticker: str, start: datetime, end: datetime, provider: str | None = None) -> list[dict]:
+    provider = provider or selected_provider()
+    return alpaca_bars(ticker, start, end) if provider == "alpaca" else yfinance_bars(ticker, start, end)
+
+
+def provider_source(provider: str | None = None) -> str:
+    return "Alpaca historical SIP · raw daily close" if (provider or selected_provider()) == "alpaca" else "Yahoo Finance via yfinance · daily close"
+
+
 def market_return(ticker: str, start_date: str, end_date: str | None = None) -> dict:
     start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
     requested_end = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1) if end_date else completed_data_cutoff()
     end = min(requested_end, completed_data_cutoff())
     try:
-        rows = alpaca_bars(ticker, start, end)
+        rows = market_bars(ticker, start, end)
         if not rows:
             raise ValueError("가격 데이터가 없습니다.")
         first, last = rows[0], rows[-1]
@@ -610,26 +661,26 @@ def market_return(ticker: str, start_date: str, end_date: str | None = None) -> 
             "ticker": ticker.upper(), "startPrice": first["price"], "lastPrice": last["price"],
             "startDate": first["date"], "lastDate": last["date"],
             "returnPct": round((last["price"] / first["price"] - 1) * 100, 2),
-            "source": "Alpaca historical SIP · raw daily close",
+            "source": provider_source(),
         }
     except (KeyError, TypeError, ValueError) as exc:
-        return {"ticker": ticker.upper(), "error": str(exc), "source": "Alpaca historical SIP"}
+        return {"ticker": ticker.upper(), "error": str(exc), "source": provider_source()}
 
 
 def latest_market_close(ticker: str) -> dict:
-    """Return the latest completed Alpaca SIP daily close."""
+    """Return the latest completed daily close from the selected provider."""
     try:
         end = completed_data_cutoff()
-        rows = alpaca_bars(ticker, end - timedelta(days=14), end)
+        rows = market_bars(ticker, end - timedelta(days=14), end)
         if not rows:
             raise ValueError("완료된 종가 데이터가 없습니다.")
         row = rows[-1]
         return {
             "ticker": ticker.upper(), "price": round(row["price"], 4), "asOf": row["date"],
-            "source": "Alpaca historical SIP · raw daily close",
+            "source": provider_source(),
         }
     except (KeyError, TypeError, ValueError) as exc:
-        return {"ticker": ticker.upper(), "error": str(exc), "source": "Alpaca historical SIP"}
+        return {"ticker": ticker.upper(), "error": str(exc), "source": provider_source()}
 
 
 def sector_leader_for(ticker: str) -> dict:
@@ -649,7 +700,7 @@ def sector_leader_for(ticker: str) -> dict:
 def market_series(ticker: str, start_date: str, end_date: str) -> list[dict]:
     start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
     end = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1)
-    return alpaca_bars(ticker, start, min(end, completed_data_cutoff()))
+    return market_bars(ticker, start, min(end, completed_data_cutoff()))
 
 
 def classify_exit(review: dict, post: dict) -> str:
@@ -966,6 +1017,16 @@ class Handler(SimpleHTTPRequestHandler):
             payload = self.read_json()
             parts = path.strip("/").split("/")
             if path == "/api/provider-settings":
+                provider = str(payload.get("provider", "alpaca")).strip().lower()
+                if provider == "yfinance":
+                    end = completed_data_cutoff()
+                    if not yfinance_bars("SPY", end - timedelta(days=10), end):
+                        raise ValueError("Yahoo Finance에서 SPY 일봉 데이터를 받지 못했습니다.")
+                    save_provider_preference("yfinance")
+                    self.send_json(provider_status())
+                    return
+                if provider != "alpaca":
+                    raise ValueError("지원하지 않는 시장 데이터 공급자입니다.")
                 api_key = str(payload.get("apiKey", "")).strip()
                 api_secret = str(payload.get("apiSecret", "")).strip()
                 if len(api_key) < 8 or len(api_secret) < 16:
@@ -975,6 +1036,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not alpaca_bars("SPY", end - timedelta(days=10), end, candidate):
                     raise ValueError("인증은 되었지만 SPY 일봉 데이터를 받지 못했습니다.")
                 save_credentials(PROVIDER_CREDENTIALS, api_key, api_secret)
+                save_provider_preference("alpaca")
                 self.send_json(provider_status())
                 return
             if path == "/api/heartbeat":

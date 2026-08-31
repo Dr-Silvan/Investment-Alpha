@@ -33,11 +33,13 @@ await import('/strategy-manager.js').then(module=>module.install({state,viewOver
 await import('/macro-news.js').then(module=>module.install({viewOverrides,api}));
 await import('/day-mode.js').then(module=>module.install({state,api,load,toast,title,money,switchView}));
 const providerSetup=await import('/provider-setup.js').then(module=>module.install({api,toast}));
+const appGuide=await import('/app-guide.js').then(module=>module.install());
 document.querySelector('.avatar').onclick=()=>providerSetup.open(true);
+document.querySelector('.guide-button').onclick=()=>appGuide.open();
 async function bootstrap(){
   await load();switchView('today');
   const provider=await providerSetup.status();
-  if(!provider.configured){await providerSetup.open(true);return}
+  if(!provider.configured){console.warn('Selected market data provider is not configured.')}
   const initialView=state.view;
   try{
     await api('/api/positions/refresh-prices',{method:'POST',body:'{}'});

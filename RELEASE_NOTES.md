@@ -1,4 +1,11 @@
-# 투자 0.9.0-beta
+# 투자 0.9.1-beta
+
+## 0.9.1 변경 사항
+
+- API 키 없이 바로 사용할 수 있도록 yfinance를 기본 시장 데이터 공급자로 복원
+- 시장 데이터 설정에서 yfinance와 Alpaca historical SIP를 선택 가능
+- 기존 Alpaca 발급 온보딩 대신 Swing·Day 탭과 주요 버튼을 설명하는 5페이지 앱 사용 설명서 추가
+- 상단 설정 버튼 옆의 책 아이콘으로 사용 설명서를 언제든 다시 열 수 있음
 
 Investment Beta가 **투자**로 이름과 아이콘을 새롭게 정리한 첫 설치형 베타 릴리스입니다.
 
@@ -22,7 +29,7 @@ Investment Beta가 **투자**로 이름과 아이콘을 새롭게 정리한 첫 
 
 ## Windows 설치
 
-`Tuja-Setup-0.9.0-beta.exe`를 내려받아 실행합니다. Windows SmartScreen은 코드 서명이 없는 개인 베타 앱에 경고를 표시할 수 있습니다.
+`Tuja-Setup-0.9.1-beta.exe`를 내려받아 실행합니다. Windows SmartScreen은 코드 서명이 없는 개인 베타 앱에 경고를 표시할 수 있습니다.
 
 - Python 런타임 포함
 - 시작 메뉴와 선택형 바탕화면 바로가기
