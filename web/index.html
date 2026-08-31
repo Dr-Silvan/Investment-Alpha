@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0d12">
+  <title>투자 — Trading Workstation</title>
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/enhancements.css">
+  <link rel="stylesheet" href="/day-mode.css">
+  <link rel="stylesheet" href="/hotfix.css">
+  <link rel="stylesheet" href="/macro-refinement.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">투</div><div><strong>투자</strong><span>Trading workstation</span></div></div>
+      <nav id="nav">
+        <button class="nav-item active" data-view="today"><span>⌂</span>Today</button>
+        <button class="nav-item" data-view="planner"><span>◇</span>Trade planner</button>
+        <button class="nav-item" data-view="importPosition"><span>＋</span>Import position</button>
+        <button class="nav-item" data-view="positions"><span>◫</span>Positions</button>
+        <button class="nav-item" data-view="journal"><span>≡</span>Journal</button>
+        <button class="nav-item" data-view="analytics"><span>⌁</span>Analytics</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sync-dot"></div><div><strong>Local-first</strong><span>Your data stays on this PC</span></div>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow" id="dateLabel"></p><h1 id="pageTitle">Good morning.</h1></div>
+        <div class="top-actions"><span class="status-pill"><i></i> Local mode</span><button class="avatar">SY</button></div>
+      </header>
+      <div id="content" class="content"></div>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
