@@ -58,6 +58,7 @@ jobs:
             $ready = $false
             for ($attempt = 0; $attempt -lt 60; $attempt++) {
               Start-Sleep -Milliseconds 500
+              if ($process.HasExited) { throw "Installed app exited during startup with code $($process.ExitCode)." }
               try {
                 $provider = Invoke-RestMethod 'http://127.0.0.1:8787/api/provider-settings' -TimeoutSec 2
                 if ($provider.provider -eq 'yfinance' -and $provider.configured) { $ready = $true; break }

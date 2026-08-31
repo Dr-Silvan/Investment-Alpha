@@ -6,6 +6,7 @@
 - 시장 데이터 설정에서 yfinance와 Alpaca historical SIP를 선택 가능
 - 기존 Alpaca 발급 온보딩 대신 Swing·Day 탭과 주요 버튼을 설명하는 5페이지 앱 사용 설명서 추가
 - 상단 설정 버튼 옆의 책 아이콘으로 사용 설명서를 언제든 다시 열 수 있음
+- 일부 Windows 환경에서 `tkinter` 누락으로 앱이 시작되지 않던 런처 오류 수정
 
 Investment Beta가 **투자**로 이름과 아이콘을 새롭게 정리한 첫 설치형 베타 릴리스입니다.
 

@@ -5,8 +5,8 @@ import sys
 import threading
 import time
 import urllib.request
+import ctypes
 from pathlib import Path
-from tkinter import Tk, messagebox
 
 import server
 
@@ -15,10 +15,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def show_error(message: str) -> None:
-    root = Tk()
-    root.withdraw()
-    messagebox.showerror("투자", message)
-    root.destroy()
+    ctypes.windll.user32.MessageBoxW(None, message, "투자", 0x10)
 
 
 def find_edge() -> Path | None:
