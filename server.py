@@ -191,6 +191,16 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(position_id) REFERENCES positions(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS position_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id INTEGER NOT NULL,
+                before_json TEXT NOT NULL,
+                after_json TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                adjusted_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(position_id) REFERENCES positions(id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS strategy_catalog (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mode TEXT NOT NULL CHECK(mode IN ('swing','day')),
@@ -1481,11 +1491,35 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "Position not found"}, HTTPStatus.NOT_FOUND)
                 return
             changes = {}
+            adjustment_fields = {}
+            if "ticker" in p:
+                ticker = str(p["ticker"]).strip().upper()
+                if not ticker:
+                    raise ValueError("종목명(티커)을 입력하세요.")
+                adjustment_fields["ticker"] = ticker
+            if "quantity" in p:
+                quantity = float(p["quantity"])
+                if quantity <= 0:
+                    raise ValueError("보유 수량은 0보다 커야 합니다.")
+                adjustment_fields["quantity"] = quantity
+            if "averagePrice" in p:
+                average_price = float(p["averagePrice"])
+                if average_price <= 0:
+                    raise ValueError("평균 매수가는 0보다 커야 합니다.")
+                adjustment_fields["average_price"] = average_price
             if "currentPrice" in p:
                 current_price = float(p["currentPrice"])
                 if current_price <= 0:
                     raise ValueError("현재가는 0보다 커야 합니다.")
                 changes["current_price"] = current_price
+                if p.get("adjustment"):
+                    adjustment_fields["current_price"] = current_price
+            if adjustment_fields:
+                if row["status"] != "active":
+                    raise ValueError("활성 포지션만 조정할 수 있습니다.")
+                if not p.get("adjustment"):
+                    raise ValueError("포지션 조정 요청임을 확인할 수 없습니다.")
+                changes.update(adjustment_fields)
             if p.get("status") == "closed":
                 exit_price = float(p["exitPrice"])
                 if exit_price <= 0:
@@ -1501,6 +1535,23 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError("변경할 값이 없습니다.")
             sql = ", ".join(f"{key} = ?" for key in changes)
             db.execute(f"UPDATE positions SET {sql} WHERE id = ?", (*changes.values(), position_id))
+            if adjustment_fields:
+                before = {key: row[key] for key in ("ticker", "quantity", "average_price", "current_price")}
+                after = dict(before)
+                after.update(adjustment_fields)
+                db.execute(
+                    """INSERT INTO position_adjustments
+                    (position_id, before_json, after_json, reason, adjusted_at, created_at)
+                    VALUES(?,?,?,?,?,?)""",
+                    (
+                        position_id,
+                        json.dumps(before, ensure_ascii=False),
+                        json.dumps(after, ensure_ascii=False),
+                        str(p.get("reason", "")).strip(),
+                        str(p.get("adjustedAt") or datetime.now().date().isoformat()),
+                        now_iso(),
+                    ),
+                )
             if changes.get("status") == "closed":
                 pnl = float(row["realized_pnl"] or 0) + (float(changes["exit_price"]) - float(row["average_price"])) * float(row["quantity"])
                 db.execute(

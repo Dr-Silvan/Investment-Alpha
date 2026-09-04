@@ -248,6 +248,44 @@ class DatabaseTests(unittest.TestCase):
                     httpd.shutdown()
                     httpd.server_close()
 
+    def test_position_adjustment_updates_split_values_and_keeps_audit_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            with patch.object(server, "DB_PATH", db_path), patch.object(server, "DATA", Path(tmp)):
+                server.init_db()
+                with server.connect() as db:
+                    cur = db.execute(
+                        "INSERT INTO positions(ticker,average_price,quantity,current_price,opened_at,created_at) VALUES(?,?,?,?,?,?)",
+                        ("OLD", 120, 10, 132, "2026-01-01", server.now_iso()),
+                    )
+                    position_id = cur.lastrowid
+                httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    payload = {"adjustment": True, "ticker": "new", "quantity": 40,
+                               "averagePrice": 30, "currentPrice": 33,
+                               "adjustedAt": "2026-08-26", "reason": "1:4 split"}
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{httpd.server_port}/api/positions/{position_id}",
+                        method="PATCH", data=json.dumps(payload).encode(),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(request) as response:
+                        result = json.load(response)
+                    self.assertEqual(result["ticker"], "NEW")
+                    self.assertEqual(result["quantity"], 40)
+                    self.assertEqual(result["average_price"], 30)
+                    self.assertEqual(result["current_price"], 33)
+                    with server.connect() as db:
+                        audit = db.execute("SELECT * FROM position_adjustments WHERE position_id=?", (position_id,)).fetchone()
+                    self.assertEqual(json.loads(audit["before_json"])["ticker"], "OLD")
+                    self.assertEqual(json.loads(audit["after_json"])["ticker"], "NEW")
+                    self.assertEqual(audit["reason"], "1:4 split")
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+
     def test_closed_position_builds_strategy_statistics(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
