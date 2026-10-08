@@ -73,6 +73,13 @@ SWING_STRATEGIES = {
     "진입 확인": ["저점 반전 확인","직전 고점 돌파","거래량 증가","지지선 재확인","Bullish Engulfing 확인"],
 }
 DAY_STRATEGIES = {"가격 행동": ["Opening Range Breakout","VWAP Reclaim","Premarket High Breakout","First Pullback","Gap and Go"], "모멘텀": ["Relative Volume Surge","Tape Acceleration","Momentum Continuation"], "반전": ["Failed Breakout Reversal","VWAP Rejection","Exhaustion Reversal"]}
+EXIT_REASONS = {
+    "계획된 청산": ["목표가 도달", "사전에 정한 R 도달", "분할익절 계획", "보유기간 만료", "이벤트 전 계획 청산"],
+    "가격 구조 훼손": ["주요 지지선 이탈", "HL → LL 전환", "상승 추세선 이탈", "Swing AVWAP 하향 이탈", "돌파 구간 재진입", "Lower High 형성", "하락 패턴 확인"],
+    "모멘텀·자금 흐름": ["RSI 지지 붕괴", "RSI 약세 다이버전스", "스토캐스틱 데드크로스", "CMF 하락", "CMF 0선 이탈", "거래량 동반 하락", "Accumulation/Distribution 약화"],
+    "시장·종목 환경": ["QQQ·SPY 추세 훼손", "섹터 상대강도 약화", "종목 상대강도 약화", "실적·이벤트 위험", "시장 Regime 변화"],
+    "심리·재량": ["손실 공포", "수익 반납 공포", "확신 저하", "근거 없는 불안", "다른 종목을 사고 싶어서", "너무 오래 보유한 느낌", "규칙 외 재량 매도"],
+}
 
 
 def now_iso() -> str:
@@ -210,6 +217,14 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 UNIQUE(mode, group_name, label)
             );
+            CREATE TABLE IF NOT EXISTS exit_reason_catalog (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_name TEXT NOT NULL,
+                label TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                UNIQUE(group_name, label)
+            );
             CREATE TABLE IF NOT EXISTS day_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticker TEXT NOT NULL,
@@ -299,6 +314,11 @@ def init_db() -> None:
         for mode, catalog in (("swing", SWING_STRATEGIES), ("day", DAY_STRATEGIES)):
             for group, labels in catalog.items():
                 db.executemany("INSERT OR IGNORE INTO strategy_catalog(mode,group_name,label,created_at) VALUES(?,?,?,?)", [(mode, group, label, now_iso()) for label in labels])
+        for group, labels in EXIT_REASONS.items():
+            db.executemany(
+                "INSERT OR IGNORE INTO exit_reason_catalog(group_name,label,created_at) VALUES(?,?,?)",
+                [(group, label, now_iso()) for label in labels],
+            )
 
 
 def as_dict(row: sqlite3.Row) -> dict:
@@ -351,6 +371,7 @@ def dashboard(db: sqlite3.Connection) -> dict:
     management_stats = [{**value, "realizedPnl": round(value["realizedPnl"], 2)} for value in action_buckets.values()]
     management_stats.sort(key=lambda row: (-row["count"], row["reason"]))
     strategies = [as_dict(row) for row in db.execute("SELECT * FROM strategy_catalog ORDER BY mode, group_name, id")]
+    exit_reasons = [as_dict(row) for row in db.execute("SELECT * FROM exit_reason_catalog ORDER BY id")]
     day_trades = [as_dict(row) for row in db.execute("SELECT * FROM day_trades ORDER BY trade_date DESC, id DESC")]
     day_journals = [as_dict(row) for row in db.execute("SELECT * FROM day_journal ORDER BY trade_date DESC, id DESC")]
     local_today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
@@ -407,6 +428,7 @@ def dashboard(db: sqlite3.Connection) -> dict:
         "positionActions": actions,
         "managementStats": management_stats,
         "strategies": strategies,
+        "exitReasons": exit_reasons,
         "dayTrades": day_trades,
         "dayJournals": day_journals,
         "dayStrategyStats": day_strategy_stats,
@@ -975,6 +997,11 @@ class Handler(SimpleHTTPRequestHandler):
                 rows = [as_dict(r) for r in db.execute("SELECT * FROM cashflows ORDER BY recorded_at, id")]
                 self.send_json(rows)
             return
+        if path == "/api/exit-reasons":
+            with connect() as db:
+                rows = [as_dict(r) for r in db.execute("SELECT * FROM exit_reason_catalog ORDER BY id")]
+                self.send_json(rows)
+            return
         if path == "/api/macro":
             self.send_json(load_macro_snapshot())
             return
@@ -1128,6 +1155,9 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/strategies":
                 self.create_strategy(payload)
                 return
+            if path == "/api/exit-reasons":
+                self.create_exit_reason(payload)
+                return
             if path == "/api/day-trades":
                 self.create_day_trade(payload)
                 return
@@ -1198,6 +1228,12 @@ class Handler(SimpleHTTPRequestHandler):
         if len(parts) == 3 and parts[:2] == ["api", "strategies"]:
             try:
                 self.update_strategy(int(parts[2]), self.read_json())
+            except (ValueError, KeyError, TypeError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if len(parts) == 3 and parts[:2] == ["api", "exit-reasons"]:
+            try:
+                self.update_exit_reason(int(parts[2]), self.read_json())
             except (ValueError, KeyError, TypeError) as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -1433,6 +1469,30 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "Strategy not found"}, HTTPStatus.NOT_FOUND);return
             db.execute("UPDATE strategy_catalog SET active=? WHERE id=?", (active, strategy_id))
             self.send_json(as_dict(db.execute("SELECT * FROM strategy_catalog WHERE id=?", (strategy_id,)).fetchone()))
+
+    def create_exit_reason(self, p: dict) -> None:
+        group, label = str(p["group"]).strip(), str(p["label"]).strip()
+        if not group or not label:
+            raise ValueError("분류와 청산 항목을 입력하세요.")
+        with connect() as db:
+            try:
+                cur = db.execute(
+                    "INSERT INTO exit_reason_catalog(group_name,label,created_at) VALUES(?,?,?)",
+                    (group, label, now_iso()),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("같은 분류에 동일한 청산 항목이 이미 있습니다.") from exc
+            self.send_json(as_dict(db.execute("SELECT * FROM exit_reason_catalog WHERE id=?", (cur.lastrowid,)).fetchone()), HTTPStatus.CREATED)
+
+    def update_exit_reason(self, reason_id: int, p: dict) -> None:
+        active = 1 if bool(p["active"]) else 0
+        with connect() as db:
+            row = db.execute("SELECT * FROM exit_reason_catalog WHERE id=?", (reason_id,)).fetchone()
+            if not row:
+                self.send_json({"error": "Exit reason not found"}, HTTPStatus.NOT_FOUND)
+                return
+            db.execute("UPDATE exit_reason_catalog SET active=? WHERE id=?", (active, reason_id))
+            self.send_json(as_dict(db.execute("SELECT * FROM exit_reason_catalog WHERE id=?", (reason_id,)).fetchone()))
 
     def create_day_trade(self, p: dict) -> None:
         ticker = str(p["ticker"]).strip().upper();entry=float(p["entryPrice"]);entry_qty=float(p["entryQuantity"]);exit_price=float(p["exitPrice"]);exit_qty=float(p["exitQuantity"]);fees=float(p.get("fees") or 0)

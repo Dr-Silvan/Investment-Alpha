@@ -362,6 +362,41 @@ class DatabaseTests(unittest.TestCase):
                     httpd.shutdown()
                     httpd.server_close()
 
+    def test_exit_reason_catalog_can_add_hide_and_restore_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            with patch.object(server, "DB_PATH", db_path), patch.object(server, "DATA", Path(tmp)):
+                server.init_db()
+                with server.connect() as db:
+                    defaults = db.execute("SELECT COUNT(*) FROM exit_reason_catalog").fetchone()[0]
+                    self.assertGreater(defaults, 0)
+                    self.assertIn("계획된 청산", {row[0] for row in db.execute("SELECT DISTINCT group_name FROM exit_reason_catalog")})
+                httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                base = f"http://127.0.0.1:{httpd.server_port}"
+                def request(path, method="GET", payload=None):
+                    req = urllib.request.Request(
+                        base + path, method=method,
+                        data=json.dumps(payload).encode() if payload is not None else None,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        return json.load(response)
+                try:
+                    added = request("/api/exit-reasons", "POST", {"group": "계획된 청산", "label": "사용자 청산 규칙"})
+                    self.assertEqual(added["active"], 1)
+                    hidden = request(f"/api/exit-reasons/{added['id']}", "PATCH", {"active": False})
+                    self.assertEqual(hidden["active"], 0)
+                    restored = request(f"/api/exit-reasons/{added['id']}", "PATCH", {"active": True})
+                    self.assertEqual(restored["active"], 1)
+                    catalog = request("/api/exit-reasons")
+                    self.assertTrue(any(row["label"] == "사용자 청산 규칙" for row in catalog))
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+                    thread.join(timeout=3)
+
     def test_cashflows_recalculate_equity_timeline(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
