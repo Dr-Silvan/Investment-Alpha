@@ -1249,8 +1249,14 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"deleted": True, **provider_status()})
             return
         parts = path.strip("/").split("/")
-        if len(parts) == 3 and parts[0] == "api" and parts[1] in {"cashflows", "snapshots"}:
-            table = "cashflows" if parts[1] == "cashflows" else "account_snapshots"
+        if len(parts) == 3 and parts[0] == "api" and parts[1] in {"cashflows", "snapshots", "strategies", "exit-reasons"}:
+            tables = {
+                "cashflows": "cashflows",
+                "snapshots": "account_snapshots",
+                "strategies": "strategy_catalog",
+                "exit-reasons": "exit_reason_catalog",
+            }
+            table = tables[parts[1]]
             try:
                 record_id = int(parts[2])
             except ValueError:
@@ -1261,7 +1267,8 @@ class Handler(SimpleHTTPRequestHandler):
                 if cur.rowcount == 0:
                     self.send_json({"error": "Record not found"}, HTTPStatus.NOT_FOUND)
                     return
-                sync_account_value(db)
+                if parts[1] in {"cashflows", "snapshots"}:
+                    sync_account_value(db)
                 self.send_json({"deleted": True, "id": record_id})
             return
         self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -1664,10 +1671,10 @@ class Handler(SimpleHTTPRequestHandler):
                     "current_price": exit_price,
                     "exit_review_json": json.dumps(p.get("exitReview", {}), ensure_ascii=False),
                 })
-                if "evidence" in p:
-                    if not isinstance(p["evidence"], dict):
-                        raise ValueError("전략 정보 형식이 올바르지 않습니다.")
-                    changes["evidence_json"] = json.dumps(p["evidence"], ensure_ascii=False)
+            if "evidence" in p:
+                if not isinstance(p["evidence"], dict):
+                    raise ValueError("전략 정보 형식이 올바르지 않습니다.")
+                changes["evidence_json"] = json.dumps(p["evidence"], ensure_ascii=False)
             if not changes:
                 raise ValueError("변경할 값이 없습니다.")
             sql = ", ".join(f"{key} = ?" for key in changes)

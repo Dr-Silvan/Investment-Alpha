@@ -392,6 +392,48 @@ class DatabaseTests(unittest.TestCase):
                     self.assertEqual(restored["active"], 1)
                     catalog = request("/api/exit-reasons")
                     self.assertTrue(any(row["label"] == "사용자 청산 규칙" for row in catalog))
+                    deleted = request(f"/api/exit-reasons/{added['id']}", "DELETE")
+                    self.assertTrue(deleted["deleted"])
+                    self.assertFalse(any(row["id"] == added["id"] for row in request("/api/exit-reasons")))
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+                    thread.join(timeout=3)
+
+    def test_active_position_evidence_can_be_edited_and_strategy_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            with patch.object(server, "DB_PATH", db_path), patch.object(server, "DATA", Path(tmp)):
+                server.init_db()
+                with server.connect() as db:
+                    cur = db.execute(
+                        """INSERT INTO positions(ticker,average_price,quantity,current_price,opened_at,created_at,status,evidence_json)
+                        VALUES(?,?,?,?,?,?,?,?)""",
+                        ("EDIT", 100, 10, 105, "2026-01-01", server.now_iso(), "active", '{}'),
+                    )
+                    position_id = cur.lastrowid
+                httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                base = f"http://127.0.0.1:{httpd.server_port}"
+                def request(path, method, payload=None):
+                    req = urllib.request.Request(
+                        base + path, method=method,
+                        data=json.dumps(payload).encode() if payload is not None else None,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        return json.load(response)
+                try:
+                    updated = request(f"/api/positions/{position_id}", "PATCH", {"evidence": {"차트 구조": ["사용자 전략"]}})
+                    self.assertIn("사용자 전략", updated["evidence_json"])
+                    strategy = request("/api/strategies", "POST", {"mode": "swing", "group": "차트 구조", "label": "삭제할 전략"})
+                    deleted = request(f"/api/strategies/{strategy['id']}", "DELETE")
+                    self.assertTrue(deleted["deleted"])
+                    with server.connect() as db:
+                        self.assertIsNone(db.execute("SELECT 1 FROM strategy_catalog WHERE id=?", (strategy["id"],)).fetchone())
+                        saved = db.execute("SELECT evidence_json FROM positions WHERE id=?", (position_id,)).fetchone()[0]
+                    self.assertIn("사용자 전략", saved)
                 finally:
                     httpd.shutdown()
                     httpd.server_close()
