@@ -1,4 +1,5 @@
 export function install({state,viewOverrides,api,load,toast}){
+  window.InvestmentStrategyManager={open:(options={})=>openManager('swing',options.returnView,options.onChange)};
   wrap('importPosition','swing');
   wrap('planner','swing');
 
@@ -31,13 +32,14 @@ export function install({state,viewOverrides,api,load,toast}){
     return count;
   }
 
-  function openManager(mode,returnView){
+  function openManager(mode,returnView,onChange){
     const modal=document.createElement('div'),rows=state.data.strategies.filter(row=>row.mode===mode);
     modal.className='modal-backdrop';
     modal.innerHTML=`<div class="modal-panel"><div class="modal-head"><div><h2>전략 카탈로그 관리</h2><p class="sub">보관된 전략은 선택 목록에서만 숨겨지며 과거 거래와 통계에는 유지됩니다.</p></div><button class="btn ghost" data-dismiss>닫기</button></div><div class="modal-body"><form id="strategyAdd"><div class="row"><label>섹션<input name="group" list="strategyGroups" required></label><label>새 전략<input name="label" required placeholder="예: Drop Test 재확인"></label></div><datalist id="strategyGroups">${[...new Set(rows.map(row=>row.group_name))].map(group=>`<option value="${group}">`).join('')}</datalist><button class="btn" type="submit">전략 추가</button></form><div class="strategy-manager-list">${rows.map(row=>`<div class="mini-stat"><span><strong>${row.label}</strong><br><small>${row.group_name} · 사용 ${usage(row.label)}회 ${row.active?'':'· 보관됨'}</small></span><button class="btn ghost" data-strategy="${row.id}" data-active="${row.active?0:1}">${row.active?'표시에서 숨기기':'다시 표시'}</button></div>`).join('')}</div></div></div>`;
     document.body.appendChild(modal);
     modal.querySelector('[data-dismiss]').onclick=()=>modal.remove();
-    modal.querySelectorAll('[data-strategy]').forEach(button=>button.onclick=async()=>{try{await api(`/api/strategies/${button.dataset.strategy}`,{method:'PATCH',body:JSON.stringify({active:button.dataset.active==='1'})});await load();modal.remove();toast('전략 표시 상태를 변경했습니다. 과거 통계는 유지됩니다.');viewOverrides[returnView]()}catch(error){toast(error.message)}});
-    modal.querySelector('#strategyAdd').onsubmit=async event=>{event.preventDefault();const payload=Object.fromEntries(new FormData(event.currentTarget));payload.mode=mode;try{await api('/api/strategies',{method:'POST',body:JSON.stringify(payload)});await load();modal.remove();toast('새 전략을 추가했습니다.');viewOverrides[returnView]()}catch(error){toast(error.message)}};
+    const refresh=async message=>{await load();modal.remove();toast(message);if(onChange)onChange();else if(returnView)viewOverrides[returnView]();else openManager(mode)};
+    modal.querySelectorAll('[data-strategy]').forEach(button=>button.onclick=async()=>{try{await api(`/api/strategies/${button.dataset.strategy}`,{method:'PATCH',body:JSON.stringify({active:button.dataset.active==='1'})});await refresh('전략 표시 상태를 변경했습니다. 과거 통계는 유지됩니다.')}catch(error){toast(error.message)}});
+    modal.querySelector('#strategyAdd').onsubmit=async event=>{event.preventDefault();const payload=Object.fromEntries(new FormData(event.currentTarget));payload.mode=mode;try{await api('/api/strategies',{method:'POST',body:JSON.stringify(payload)});await refresh('새 전략을 추가했습니다.')}catch(error){toast(error.message)}};
   }
 }

@@ -1331,6 +1331,10 @@ class Handler(SimpleHTTPRequestHandler):
                     changes["initial_r"] = max((old_avg - float(stop_after)) * old_qty, 0)
             if stop_after:
                 changes["current_stop"] = float(stop_after)
+            if "evidence" in p:
+                if not isinstance(p["evidence"], dict):
+                    raise ValueError("전략 정보 형식이 올바르지 않습니다.")
+                changes["evidence_json"] = json.dumps(p["evidence"], ensure_ascii=False)
             final_qty = float(changes.get("quantity", old_qty))
             final_avg = float(changes.get("average_price", old_avg))
             live_risk = max((final_avg - float(stop_after)) * final_qty, 0) if stop_after else 0
@@ -1490,6 +1494,75 @@ class Handler(SimpleHTTPRequestHandler):
             if not row:
                 self.send_json({"error": "Position not found"}, HTTPStatus.NOT_FOUND)
                 return
+            if p.get("historyEdit"):
+                if row["status"] != "closed":
+                    raise ValueError("청산된 포지션만 거래 히스토리에서 수정할 수 있습니다.")
+                ticker = str(p.get("ticker", row["ticker"])).strip().upper()
+                quantity = float(p.get("quantity", row["quantity"]))
+                average_price = float(p.get("averagePrice", row["average_price"]))
+                exit_price = float(p.get("exitPrice", row["exit_price"]))
+                closed_at = str(p.get("closedAt", row["closed_at"])).strip()
+                if not ticker or min(quantity, average_price, exit_price) <= 0 or not closed_at:
+                    raise ValueError("종목명, 수량, 평균 매수가, 청산가와 청산일을 확인하세요.")
+                try:
+                    datetime.fromisoformat(closed_at)
+                except ValueError as exc:
+                    raise ValueError("청산일은 올바른 날짜여야 합니다.") from exc
+                evidence = p.get("evidence", {})
+                if not isinstance(evidence, dict):
+                    raise ValueError("전략 정보 형식이 올바르지 않습니다.")
+                exit_review = p.get("exitReview", json.loads(row["exit_review_json"] or "{}"))
+                result_pct = round((exit_price / average_price - 1) * 100, 4)
+                sell_actions = db.execute(
+                    "SELECT price, quantity, fee FROM position_actions WHERE position_id=? AND action_type='sell'",
+                    (position_id,),
+                ).fetchall()
+                partial_realized = (
+                    sum((float(action["price"]) - average_price) * float(action["quantity"]) - float(action["fee"] or 0)
+                        for action in sell_actions)
+                    if sell_actions else float(row["realized_pnl"] or 0)
+                )
+                db.execute(
+                    """UPDATE positions SET ticker=?, quantity=?, average_price=?, exit_price=?, current_price=?,
+                    closed_at=?, result_pct=?, evidence_json=?, exit_review_json=?, realized_pnl=? WHERE id=?""",
+                    (ticker, quantity, average_price, exit_price, exit_price, closed_at, result_pct,
+                     json.dumps(evidence, ensure_ascii=False), json.dumps(exit_review, ensure_ascii=False),
+                     partial_realized, position_id),
+                )
+                pnl = partial_realized + (exit_price - average_price) * quantity
+                db.execute(
+                    """INSERT INTO realized_events(source_kind, source_id, amount, note, recorded_at)
+                    VALUES('position', ?, ?, ?, ?)
+                    ON CONFLICT(source_kind, source_id) DO UPDATE SET amount=excluded.amount, note=excluded.note, recorded_at=excluded.recorded_at""",
+                    (position_id, pnl, f"{ticker} imported position P&L", closed_at),
+                )
+                sync_account_value(db)
+                updated = db.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
+                self.send_json(as_dict(updated))
+                return
+            if p.get("reopen"):
+                if row["status"] != "closed":
+                    raise ValueError("청산된 포지션만 다시 활성화할 수 있습니다.")
+                db.execute(
+                    """UPDATE positions SET status='active', closed_at=NULL, exit_price=NULL, result_pct=NULL,
+                    exit_review_json='{}', post_exit_json='{}', post_exit_updated_at=NULL WHERE id=?""",
+                    (position_id,),
+                )
+                partial_realized = float(row["realized_pnl"] or 0)
+                if partial_realized:
+                    db.execute(
+                        """INSERT INTO realized_events(source_kind, source_id, amount, note, recorded_at)
+                        VALUES('position', ?, ?, ?, ?)
+                        ON CONFLICT(source_kind, source_id) DO UPDATE SET amount=excluded.amount, note=excluded.note, recorded_at=excluded.recorded_at""",
+                        (position_id, partial_realized, f"{row['ticker']} partial position P&L",
+                         str(row["closed_at"] or datetime.now().date().isoformat())),
+                    )
+                else:
+                    db.execute("DELETE FROM realized_events WHERE source_kind='position' AND source_id=?", (position_id,))
+                sync_account_value(db)
+                updated = db.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
+                self.send_json(as_dict(updated))
+                return
             changes = {}
             adjustment_fields = {}
             if "ticker" in p:
@@ -1531,6 +1604,10 @@ class Handler(SimpleHTTPRequestHandler):
                     "current_price": exit_price,
                     "exit_review_json": json.dumps(p.get("exitReview", {}), ensure_ascii=False),
                 })
+                if "evidence" in p:
+                    if not isinstance(p["evidence"], dict):
+                        raise ValueError("전략 정보 형식이 올바르지 않습니다.")
+                    changes["evidence_json"] = json.dumps(p["evidence"], ensure_ascii=False)
             if not changes:
                 raise ValueError("변경할 값이 없습니다.")
             sql = ", ".join(f"{key} = ?" for key in changes)

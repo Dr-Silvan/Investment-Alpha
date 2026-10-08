@@ -306,6 +306,62 @@ class DatabaseTests(unittest.TestCase):
                     self.assertEqual(stats[0]["winRate"], 100.0)
                     self.assertEqual(stats[0]["averageReturnPct"], 10.0)
 
+    def test_closed_position_history_can_be_edited_and_reopened(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            with patch.object(server, "DB_PATH", db_path), patch.object(server, "DATA", Path(tmp)):
+                server.init_db()
+                with server.connect() as db:
+                    db.execute("INSERT INTO account_snapshots(value,note,recorded_at) VALUES(?,?,?)", (50_000, "initial", "2026-01-01"))
+                    cur = db.execute(
+                        """INSERT INTO positions
+                        (ticker,average_price,quantity,current_price,opened_at,created_at,status,closed_at,exit_price,result_pct,evidence_json,exit_review_json)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        ("OLD", 100, 10, 110, "2026-01-01", server.now_iso(), "closed", "2026-02-01", 110, 10,
+                         '{"차트 구조":["기존 전략"]}', '{"ruleBased":true}'),
+                    )
+                    position_id = cur.lastrowid
+                    db.execute(
+                        "INSERT INTO realized_events(source_kind,source_id,amount,note,recorded_at) VALUES(?,?,?,?,?)",
+                        ("position", position_id, 100, "OLD imported position P&L", "2026-02-01"),
+                    )
+                httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+                thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                base = f"http://127.0.0.1:{httpd.server_port}"
+                def request(payload):
+                    req = urllib.request.Request(
+                        f"{base}/api/positions/{position_id}", method="PATCH",
+                        data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        return json.load(response)
+                try:
+                    edited = request({
+                        "historyEdit": True, "ticker": "new", "quantity": 20,
+                        "averagePrice": 50, "exitPrice": 60, "closedAt": "2026-03-01",
+                        "evidence": {"차트 구조": ["새 전략"]},
+                        "exitReview": {"ruleBased": False, "note": "수정"},
+                    })
+                    self.assertEqual(edited["ticker"], "NEW")
+                    self.assertEqual(edited["result_pct"], 20)
+                    with server.connect() as db:
+                        realized = db.execute("SELECT * FROM realized_events WHERE source_kind='position' AND source_id=?", (position_id,)).fetchone()
+                    self.assertEqual(realized["amount"], 200)
+                    self.assertEqual(realized["recorded_at"], "2026-03-01")
+                    self.assertIn("새 전략", edited["evidence_json"])
+
+                    reopened = request({"reopen": True})
+                    self.assertEqual(reopened["status"], "active")
+                    self.assertIsNone(reopened["closed_at"])
+                    self.assertIsNone(reopened["exit_price"])
+                    with server.connect() as db:
+                        count = db.execute("SELECT COUNT(*) FROM realized_events WHERE source_kind='position' AND source_id=?", (position_id,)).fetchone()[0]
+                    self.assertEqual(count, 0)
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+
     def test_cashflows_recalculate_equity_timeline(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
